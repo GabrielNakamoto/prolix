@@ -44,8 +44,8 @@ def bpe(corpus, ntoks, nthreads) -> list[bytes,...]:
   nw = len(words) // nthreads
   batches = [words[i*nw:(i+1)*nw] if i < (nthreads-1) else words[i*nw:] for i in range(nthreads)]
 
-  tokens = [chr(i).encode('utf-8') for i in range(256)]
-  tokens.append("<|endoftext|>")
+  tokens = [bytes([i]) for i in range(256)]
+  tokens.append(b"<|endoftext|>")
 
   with Pool(nthreads) as p:
     merges = []
@@ -53,7 +53,24 @@ def bpe(corpus, ntoks, nthreads) -> list[bytes,...]:
       merges.extend(ms)
     tokens.extend(set(merges)) # dedup
 
-  return {i:tk for i,tk in enumerate(tokens)}
+  return {tk:i for i,tk in enumerate(tokens)}
+
+def tokenize(text, vocab):
+  PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+  words = re.findall(PAT, text)
+
+  def merge(bs):
+    pair = b"".join(bs[0:2])
+    if len(bs) == 1: return bs
+    elif pair in vocab:
+      return merge([pair] + bs[2:])
+    else: return [bs[0]] + merge(bs[1:])
+
+  for w in words:
+    b = [bytes([b]) for b in w.encode('utf-8')]
+    print(merge(b))
+    out = [vocab[p] for p in merge(b)]
+    print(w, out)
 
 def main():
   corpus = open("infinite-jest.txt", "r").read()
@@ -65,6 +82,10 @@ def main():
     pickle.dump(vocab, open("vocab.pkl", "wb"))
 
   print(vocab)
+
+  # try tokenizing, whats the compression ratio?
+  source = open("test.txt", "r").read()
+  tokenize(source, vocab)
 
 if __name__ == "__main__":
   main()
