@@ -1,8 +1,6 @@
-from tinygrad import Tensor, dtypes, nn
 from array import array
-import pickle
+import pickle, bpe
 import numpy as np
-from bpe import encode
 
 # is actually linear cause no affine bias lol
 class Linear:
@@ -96,11 +94,33 @@ class Transformer:
     out = x.sequential(self.layers)
     return out
 
-if __name__ == "__main__":
-  vocab = pickle.load(open("vocab.pkl", "rb"))
-  prompt = "Was that life? Well then! Once more!"
-  x = Tensor(encode(prompt, vocab), dtype=dtypes.uint32).unsqueeze(0)
+def cosine_annealing_schedule(t, lr_min, lr_max, t_warm, t_total):
+  if t < to_warm: return t/t_warm * lr_max
+  elif t > t_total: return lr_min
+  else: return lr_min + 1/2 * (1 + np.cos((t-t_warm)/(t_total-t_warm)*np.pi)) * (lr_max - lr_min)
 
-  model = Transformer(256, 4, 3, 3, 64, 128, len(vocab[1]))
-  logits = model(x)
-  print(logits.shape, logits.numpy())
+def load_dataset(filename, batch_size, context_len):
+  vocab = pickle.load(open("vocab.pkl", "rb"))
+  text = open(filename, "r").read()
+  tokens = np.array(bpe.encode(text, vocab), dtype=np.int32)
+  tokens = tokens[:(tokens.shape[0]//context_len)*context_len].reshape(-1, context_len)
+  while True:
+    idx = np.random.randint(0, tokens.shape[0]-context_len, batch_size)
+    yield tokens[idx][:, :-1], tokens[idx][:, 1:]
+
+if __name__ == "__main__":
+  # vocab = pickle.load(open("vocab.pkl", "rb"))
+  # prompt = "Was that life? Well then! Once more!"
+  # x = Tensor(encode(prompt, vocab), dtype=dtypes.uint32).unsqueeze(0)
+
+  gen = load_dataset("infinite-jest.txt", 32, 256)
+  x,y = next(gen)
+
+  # model = Transformer(256, 4, 3, 3, 64, 128, len(vocab[1]))
+  # TODO: custom muon/adamw optimizer
+  # optim = nn.optim.AdamW(nn.state.get_parameters(model))
+
+  # gradient clipping
+
+  # logits = model(x)
+  # print(logits.shape, logits.numpy())
