@@ -1,3 +1,4 @@
+from tinygrad import Tensor, dtypes, Context, nn
 from array import array
 import pickle, bpe
 import numpy as np
@@ -72,7 +73,9 @@ def precompute_rotary_embeddings(seq_len, head_dim, base=10000) -> tuple[Tensor,
   freqs = Tensor.einsum('i,j->ij', t, inv_freq)
   cos, sin = freqs.cos(), freqs.sin()
   # helps w/ broadcasting?
-  return cos[None, :, None, :], sin[None, :, None, :]
+  cos, sin = cos[None, :, None, :], sin[None, :, None, :]
+  cos.is_param, sin.is_param = False, False
+  return cos, sin
 
 def apply_rope(x: Tensor, cos_sin):
   cos, sin = cos_sin
@@ -88,11 +91,13 @@ class Transformer:
     self.embedding = Embedding(vocab_size, embed_dim)
     cos_sin = precompute_rotary_embeddings(max_ctx, head_dim)
     self.layers = [TransformerBlock(embed_dim, n_heads, n_kv_heads, head_dim, cos_sin) for _ in range(n_layers)]
+    self.norm = nn.LayerNorm(embed_dim)
+    self.out_proj = Linear(embed_dim, embed_dim)
   def __call__(self, x:Tensor):
     # TODO: manage/save kv cache?, measure perplexity...
     x = self.embedding(x)
     out = x.sequential(self.layers)
-    return out
+    return self.out_proj(self.norm(out))
 
 def cosine_annealing_schedule(t, lr_min, lr_max, t_warm, t_total):
   if t < to_warm: return t/t_warm * lr_max
@@ -105,22 +110,26 @@ def load_dataset(filename, batch_size, context_len):
   tokens = np.array(bpe.encode(text, vocab), dtype=np.int32)
   tokens = tokens[:(tokens.shape[0]//context_len)*context_len].reshape(-1, context_len)
   while True:
-    idx = np.random.randint(0, tokens.shape[0]-context_len, batch_size)
-    yield tokens[idx][:, :-1], tokens[idx][:, 1:]
+    idx = np.random.randint(0, tokens.shape[0]-context_len+1, batch_size)
+    yield Tensor(tokens[idx][:, :-1], dtype=dtypes.uint32), Tensor(tokens[idx][:, 1:], dtype=dtypes.uint32)
 
 if __name__ == "__main__":
-  # vocab = pickle.load(open("vocab.pkl", "rb"))
-  # prompt = "Was that life? Well then! Once more!"
-  # x = Tensor(encode(prompt, vocab), dtype=dtypes.uint32).unsqueeze(0)
+  vocab = pickle.load(open("vocab.pkl", "rb"))
+  model = Transformer(256, 4, 3, 3, 64, 512, len(vocab[1]))
+  optim = nn.optim.AdamW(nn.state.get_parameters(model))
+  data = load_dataset("infinite-jest.txt", 32, 256)
 
-  gen = load_dataset("infinite-jest.txt", 32, 256)
-  x,y = next(gen)
+  # TODO: custom muon/adamw optimizer, gradient clipping
+  @Context(TRAINING=1)
+  def train_step():
+    train_x, train_y = next(data)
+    optim.zero_grad()
+    loss = model(train_x).sparse_categorical_crossentropy(train_y).backward()
+    optim.step()
+    return loss.item()
 
-  # model = Transformer(256, 4, 3, 3, 64, 128, len(vocab[1]))
-  # TODO: custom muon/adamw optimizer
-  # optim = nn.optim.AdamW(nn.state.get_parameters(model))
+  for epoch in range(20):
+    # TODO: update lr
+    loss = train_step()
+    print(f"epoch={epoch}, loss={loss:.4f}")
 
-  # gradient clipping
-
-  # logits = model(x)
-  # print(logits.shape, logits.numpy())
