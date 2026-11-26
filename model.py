@@ -1,8 +1,8 @@
 from tinygrad import Tensor, dtypes, Context, nn
 from array import array
-import pickle, bpe
+import pickle, bpe, sys
 import numpy as np
-from tinygrad.nn.state import safe_save, get_state_dict, load_state_dict
+from tinygrad.nn.state import safe_save, get_state_dict, load_state_dict, safe_load
 
 # is actually linear cause no affine bias lol
 class Linear:
@@ -93,7 +93,7 @@ class Transformer:
     cos_sin = precompute_rotary_embeddings(max_ctx, head_dim)
     self.layers = [TransformerBlock(embed_dim, n_heads, n_kv_heads, head_dim, cos_sin) for _ in range(n_layers)]
     self.norm = nn.LayerNorm(embed_dim)
-    self.out_proj = Linear(embed_dim, embed_dim)
+    self.out_proj = Linear(embed_dim, vocab_size)
   def __call__(self, x:Tensor):
     # TODO: manage/save kv cache?, measure perplexity...
     x = self.embedding(x)
@@ -119,9 +119,9 @@ def load_dataset(filename, batch_size, context_len):
       yield Tensor(tokens[idx][:, :-1], dtype=dtypes.uint32), Tensor(tokens[idx][:, 1:], dtype=dtypes.uint32)
   return (valid_x, valid_y), train_gen
 
-if __name__ == "__main__":
+def train():
   vocab = pickle.load(open("vocab.pkl", "rb"))
-  model = Transformer(256, 4, 3, 3, 64, 10000, len(vocab[1]))
+  model = Transformer(256, 8, 3, 3, 64, 10000, len(vocab[0]))
   optim = nn.optim.AdamW(nn.state.get_parameters(model))
   (valid_x, valid_y), train_gen = load_dataset("infinite-jest.txt", 32, 256)
   data = train_gen()
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     optim.step()
     return loss.item()
 
-  for epoch in range(20):
+  for epoch in range(100):
     # TODO: update lr, extract tennsor intrinics
     loss = train_step()
     valid_loss = model(valid_x).sparse_categorical_crossentropy(valid_y).item()
@@ -143,3 +143,32 @@ if __name__ == "__main__":
     print(f"epoch={epoch}, train_loss={loss:.4f}, valid_loss={valid_loss:.4f}")
 
   safe_save(get_state_dict(model), "model.safetensor")
+
+def run():
+  vocab = pickle.load(open("vocab.pkl", "rb"))
+  model = Transformer(256, 4, 3, 3, 64, 10000, len(vocab[0]))
+  inv_toks = {v:k for k,v in vocab[0].items()}
+
+  state_dict = safe_load("model.safetensor")
+  load_state_dict(model, state_dict)
+
+  prompt = "Eschaton is"
+  def sample():
+    nonlocal prompt
+    x = Tensor(bpe.encode(prompt, vocab), dtype=dtypes.uint32).unsqueeze(0)
+    logits = model(x)
+    # logits is a matrix conditional propability distribution of shape (seq_len, vocab_size)
+    # P(x_t+1 | x_1..t) for all t 1..seq_len
+    # hence we take last row and apply softmax to sample
+    probs = logits[0, -1].softmax()
+    predicted = probs.argmax().item()
+
+    prompt += inv_toks[predicted].decode('utf-8')
+    print(prompt)
+
+  for _ in range(20): sample()
+
+if __name__ == "__main__":
+  if len(sys.argv) != 2 or sys.argv[1] not in ["run", "train"]: print(f"usage: python {sys.argv[0]} <train | run>")
+  elif sys.argv[1] == "train": train()
+  elif sys.argv[1] == "run": run()
