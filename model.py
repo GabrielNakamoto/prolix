@@ -2,6 +2,7 @@ from tinygrad import Tensor, dtypes, Context, nn
 from array import array
 import pickle, bpe
 import numpy as np
+from tinygrad.nn.state import safe_save, get_state_dict, load_state_dict
 
 # is actually linear cause no affine bias lol
 class Linear:
@@ -108,16 +109,22 @@ def load_dataset(filename, batch_size, context_len):
   vocab = pickle.load(open("vocab.pkl", "rb"))
   text = open(filename, "r").read()
   tokens = np.array(bpe.encode(text, vocab), dtype=np.int32)
+  valid_x, valid_y = Tensor(tokens[:5000], dtype=dtypes.uint32), Tensor(tokens[1:5001], dtype=dtypes.uint32)
+  valid_x, valid_y = valid_x.unsqueeze(0), valid_y.unsqueeze(0)
+  tokens = tokens[5001:]
   tokens = tokens[:(tokens.shape[0]//context_len)*context_len].reshape(-1, context_len)
-  while True:
-    idx = np.random.randint(0, tokens.shape[0]-context_len+1, batch_size)
-    yield Tensor(tokens[idx][:, :-1], dtype=dtypes.uint32), Tensor(tokens[idx][:, 1:], dtype=dtypes.uint32)
+  def train_gen():
+    while True:
+      idx = np.random.randint(0, tokens.shape[0]-context_len+1, batch_size)
+      yield Tensor(tokens[idx][:, :-1], dtype=dtypes.uint32), Tensor(tokens[idx][:, 1:], dtype=dtypes.uint32)
+  return (valid_x, valid_y), train_gen
 
 if __name__ == "__main__":
   vocab = pickle.load(open("vocab.pkl", "rb"))
-  model = Transformer(256, 4, 3, 3, 64, 512, len(vocab[1]))
+  model = Transformer(256, 4, 3, 3, 64, 10000, len(vocab[1]))
   optim = nn.optim.AdamW(nn.state.get_parameters(model))
-  data = load_dataset("infinite-jest.txt", 32, 256)
+  (valid_x, valid_y), train_gen = load_dataset("infinite-jest.txt", 32, 256)
+  data = train_gen()
 
   # TODO: custom muon/adamw optimizer, gradient clipping
   @Context(TRAINING=1)
@@ -129,7 +136,10 @@ if __name__ == "__main__":
     return loss.item()
 
   for epoch in range(20):
-    # TODO: update lr
+    # TODO: update lr, extract tennsor intrinics
     loss = train_step()
-    print(f"epoch={epoch}, loss={loss:.4f}")
+    valid_loss = model(valid_x).sparse_categorical_crossentropy(valid_y).item()
 
+    print(f"epoch={epoch}, train_loss={loss:.4f}, valid_loss={valid_loss:.4f}")
+
+  safe_save(get_state_dict(model), "model.safetensor")
